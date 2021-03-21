@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<thing:thing-descriptions bindingId="wermasignaltower"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:thing="https://openhab.org/schemas/thing-description/v1.0.0"
+	xsi:schemaLocation="https://openhab.org/schemas/thing-description/v1.0.0 https://openhab.org/schemas/thing-description-1.0.0.xsd">
+
+	<!-- Sample Thing Type -->
+	<thing-type id="wermasignaltower">
+		<label>WermaSignalTower Binding Thing</label>
+		<description>Sample thing for WermaSignalTower Binding</description>
+
+		<channels>
+			<channel id="tier1" typeId="tier1-channel"/>
+			<channel id="tier2" typeId="tier2-channel"/>
+			<channel id="tier3" typeId="tier3-channel"/>
+			<channel id="tier4" typeId="tier4-channel"/>
+			<channel id="tier5" typeId="tier5-channel"/>
+			<channel id="version" typeId="version-channel"/>
+			<channel id="name" typeId="name-channel"/>
+		</channels>
+
+		<config-description>
+			<parameter name="serialbridge" type="text" required="true">
+				<label>Serial Bridge</label>
+				<description>Choose which serial bridge to use</description>
+			</parameter>
+		</config-description>
+
+	</thing-type>
+
+	<channel-type id="number">
+		<item-type>Switch</item-type>
+		<label>tier1</label>
+		<description>Tier 1</description>
+		<config-description>
+			<parameter name="onValue" type="integer">
+				<label>On Value</label>
+				<description>Send this value when receiving an ON command</description>
+			</parameter>
+		</config-description>
+	</channel-type>
+
+</thing:thing-descriptions>

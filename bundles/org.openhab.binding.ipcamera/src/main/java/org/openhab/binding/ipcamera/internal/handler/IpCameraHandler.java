@@ -57,6 +57,7 @@ import org.openhab.binding.ipcamera.internal.IpCameraDynamicStateDescriptionProv
 import org.openhab.binding.ipcamera.internal.MyNettyAuthHandler;
 import org.openhab.binding.ipcamera.internal.StreamServerHandler;
 import org.openhab.binding.ipcamera.internal.onvif.OnvifConnection;
+import org.openhab.core.OpenHAB;
 import org.openhab.core.library.types.DecimalType;
 import org.openhab.core.library.types.IncreaseDecreaseType;
 import org.openhab.core.library.types.OnOffType;
@@ -206,6 +207,7 @@ public class IpCameraHandler extends BaseThingHandler {
         private byte[] incomingJpeg = new byte[0];
         private String incomingMessage = "";
         private String contentType = "empty";
+        private String boundary = "";
         private Object reply = new Object();
         private String requestUrl = "";
         private boolean closeConnection = true;
@@ -255,6 +257,8 @@ public class IpCameraHandler extends BaseThingHandler {
                                         firstStreamedMsg = msg;
                                         streamToGroup(firstStreamedMsg, mjpegChannelGroup, true);
                                     }
+                                } else {
+                                    boundary = Helper.searchString(contentType, "boundary=");
                                 }
                             } else if (contentType.contains("image/jp")) {
                                 if (bytesToRecieve == 0) {
@@ -305,11 +309,32 @@ public class IpCameraHandler extends BaseThingHandler {
                             }
                             // Alarm Streams never have a LastHttpContent as they always stay open//
                             else if (contentType.contains("multipart")) {
-                                if (bytesAlreadyRecieved != 0) {
-                                    reply = incomingMessage;
-                                    incomingMessage = "";
-                                    bytesToRecieve = 0;
-                                    bytesAlreadyRecieved = 0;
+                                int beginIndex, endIndex;
+                                if (bytesToRecieve == 0) {
+                                    beginIndex = incomingMessage.indexOf("Content-Length:");
+                                    if (beginIndex != -1) {
+                                        endIndex = incomingMessage.indexOf("\r\n", beginIndex);
+                                        if (endIndex != -1) {
+                                            bytesToRecieve = Integer.parseInt(
+                                                    incomingMessage.substring(beginIndex + 15, endIndex).strip());
+                                        }
+                                    }
+                                }
+                                // --boundary and headers are not included in the Content-Length value
+                                if (bytesAlreadyRecieved > bytesToRecieve) {
+                                    // Check if message has a second --boundary
+                                    endIndex = incomingMessage.indexOf("--" + boundary, bytesToRecieve);
+                                    if (endIndex == -1) {
+                                        reply = incomingMessage;
+                                        incomingMessage = "";
+                                        bytesToRecieve = 0;
+                                        bytesAlreadyRecieved = 0;
+                                    } else {
+                                        reply = incomingMessage.substring(0, endIndex);
+                                        incomingMessage = incomingMessage.substring(endIndex, incomingMessage.length());
+                                        bytesToRecieve = 0;// Triggers search next time for Content-Length:
+                                        bytesAlreadyRecieved = incomingMessage.length() - endIndex;
+                                    }
                                     super.channelRead(ctx, reply);
                                 }
                             }
@@ -443,7 +468,7 @@ public class IpCameraHandler extends BaseThingHandler {
         String temp = longUrl;
         URL url;
 
-        if (longUrl.isEmpty() || longUrl.equals("ffmpeg")) {
+        if (longUrl.isEmpty() || "ffmpeg".equals(longUrl)) {
             return longUrl;
         }
 
@@ -748,7 +773,7 @@ public class IpCameraHandler extends BaseThingHandler {
         if (start) {
             if (mjpegChannelGroup.isEmpty()) {// first stream being requested.
                 mjpegChannelGroup.add(ctx.channel());
-                if (mjpegUri.isEmpty() || mjpegUri.equals("ffmpeg")) {
+                if (mjpegUri.isEmpty() || "ffmpeg".equals(mjpegUri)) {
                     sendMjpegFirstPacket(ctx);
                     setupFfmpegFormat(FFmpegFormat.MJPEG);
                 } else {
@@ -770,7 +795,7 @@ public class IpCameraHandler extends BaseThingHandler {
             mjpegChannelGroup.remove(ctx.channel());
             if (mjpegChannelGroup.isEmpty()) {
                 logger.debug("All ipcamera.mjpeg streams have stopped.");
-                if (mjpegUri.equals("ffmpeg") || mjpegUri.isEmpty()) {
+                if ("ffmpeg".equals(mjpegUri) || mjpegUri.isEmpty()) {
                     Ffmpeg localMjpeg = ffmpegMjpeg;
                     if (localMjpeg != null) {
                         localMjpeg.stopConverting();
@@ -955,7 +980,7 @@ public class IpCameraHandler extends BaseThingHandler {
                     localGIF.startConverting();
                     if (gifHistory.isEmpty()) {
                         gifHistory = gifFilename;
-                    } else if (!gifFilename.equals("ipcamera")) {
+                    } else if (!"ipcamera".equals(gifFilename)) {
                         gifHistory = gifFilename + "," + gifHistory;
                         if (gifHistoryLength > 49) {
                             int endIndex = gifHistory.lastIndexOf(",");
@@ -979,7 +1004,7 @@ public class IpCameraHandler extends BaseThingHandler {
                     localRecord.startConverting();
                     if (mp4History.isEmpty()) {
                         mp4History = mp4Filename;
-                    } else if (!mp4Filename.equals("ipcamera")) {
+                    } else if (!"ipcamera".equals(mp4Filename)) {
                         mp4History = mp4Filename + "," + mp4History;
                         if (mp4HistoryLength > 49) {
                             int endIndex = mp4History.lastIndexOf(",");
@@ -1167,6 +1192,26 @@ public class IpCameraHandler extends BaseThingHandler {
 
     private void sendPTZRequest() {
         onvifCamera.sendPTZRequest(OnvifConnection.RequestType.AbsoluteMove);
+    }
+
+    @Override
+    public void channelLinked(ChannelUID channelUID) {
+        if (cameraConfig.getServerPort() > 0) {
+            switch (channelUID.getId()) {
+                case CHANNEL_MJPEG_URL:
+                    updateState(CHANNEL_MJPEG_URL, new StringType(
+                            "http://" + hostIp + ":" + cameraConfig.getServerPort() + "/ipcamera.mjpeg"));
+                    break;
+                case CHANNEL_HLS_URL:
+                    updateState(CHANNEL_HLS_URL,
+                            new StringType("http://" + hostIp + ":" + cameraConfig.getServerPort() + "/ipcamera.m3u8"));
+                    break;
+                case CHANNEL_IMAGE_URL:
+                    updateState(CHANNEL_IMAGE_URL,
+                            new StringType("http://" + hostIp + ":" + cameraConfig.getServerPort() + "/ipcamera.jpg"));
+                    break;
+            }
+        }
     }
 
     @Override
@@ -1411,7 +1456,7 @@ public class IpCameraHandler extends BaseThingHandler {
         updateState(channelToUpdate, valueOf);
     }
 
-    void bringCameraOnline() {
+    private void bringCameraOnline() {
         isOnline = true;
         updateStatus(ThingStatus.ONLINE);
         groupTracker.listOfOnlineCameraHandlers.add(this);
@@ -1419,19 +1464,6 @@ public class IpCameraHandler extends BaseThingHandler {
         Future<?> localFuture = cameraConnectionJob;
         if (localFuture != null) {
             localFuture.cancel(false);
-        }
-
-        switch (thing.getThingTypeUID().getId()) {
-            case HIKVISION_THING:
-                sendHttpGET("/ISAPI/Smart/AudioDetection/channels/" + cameraConfig.getNvrChannel() + "01");
-                sendHttpGET("/ISAPI/Smart/LineDetection/" + cameraConfig.getNvrChannel() + "01");
-                sendHttpGET("/ISAPI/Smart/FieldDetection/" + cameraConfig.getNvrChannel() + "01");
-                sendHttpGET(
-                        "/ISAPI/System/Video/inputs/channels/" + cameraConfig.getNvrChannel() + "01/motionDetection");
-                sendHttpGET("/ISAPI/System/Video/inputs/channels/" + cameraConfig.getNvrChannel() + "/overlays/text/1");
-                sendHttpGET("/ISAPI/System/IO/inputs/" + cameraConfig.getNvrChannel());
-                sendHttpGET("/ISAPI/System/IO/inputs/" + cameraConfig.getNvrChannel());
-                break;
         }
 
         if (cameraConfig.getGifPreroll() > 0 || cameraConfig.getUpdateImageWhen().contains("1")) {
@@ -1477,7 +1509,7 @@ public class IpCameraHandler extends BaseThingHandler {
             if (rtspUri.isEmpty()) {
                 logger.warn("Binding has not been supplied with a FFmpeg Input URL, so some features will not work.");
             }
-            if (snapshotUri.isEmpty() || snapshotUri.equals("ffmpeg")) {
+            if (snapshotUri.isEmpty() || "ffmpeg".equals(snapshotUri)) {
                 snapshotIsFfmpeg();
             } else {
                 sendHttpRequest("GET", snapshotUri, null);
@@ -1489,7 +1521,7 @@ public class IpCameraHandler extends BaseThingHandler {
                     cameraConfig.getOnvifPort());
             onvifCamera.connect(thing.getThingTypeUID().getId().equals(ONVIF_THING));
         }
-        if (snapshotUri.equals("ffmpeg")) {
+        if ("ffmpeg".equals(snapshotUri)) {
             snapshotIsFfmpeg();
         } else if (!snapshotUri.isEmpty()) {
             sendHttpRequest("GET", snapshotUri, null);
@@ -1653,6 +1685,10 @@ public class IpCameraHandler extends BaseThingHandler {
         snapshotUri = getCorrectUrlFormat(cameraConfig.getSnapshotUrl());
         mjpegUri = getCorrectUrlFormat(cameraConfig.getMjpegUrl());
         rtspUri = cameraConfig.getFfmpegInput();
+        if (cameraConfig.getFfmpegOutput().isEmpty()) {
+            cameraConfig
+                    .setFfmpegOutput(OpenHAB.getUserDataFolder() + "/ipcamera/" + this.thing.getUID().getId() + "/");
+        }
 
         if (cameraConfig.getServerPort() < 1) {
             logger.warn(
@@ -1724,8 +1760,8 @@ public class IpCameraHandler extends BaseThingHandler {
             onvifCamera.connect(thing.getThingTypeUID().getId().equals(ONVIF_THING));
         }
 
-        // for poll times above 9 seconds don't display a warning about the Image channel.
-        if (9000 <= cameraConfig.getPollTime() && cameraConfig.getUpdateImageWhen().contains("1")) {
+        // for poll times 9 seconds and above don't display a warning about the Image channel.
+        if (9000 > cameraConfig.getPollTime() && cameraConfig.getUpdateImageWhen().contains("1")) {
             logger.warn(
                     "The Image channel is set to update more often than 8 seconds. This is not recommended. The Image channel is best used only for higher poll times. See the readme file on how to display the cameras picture for best results or use a higher poll time.");
         }

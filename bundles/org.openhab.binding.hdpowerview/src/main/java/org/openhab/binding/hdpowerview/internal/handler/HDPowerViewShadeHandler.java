@@ -31,6 +31,7 @@ import org.openhab.binding.hdpowerview.internal.api.CoordinateSystem;
 import org.openhab.binding.hdpowerview.internal.api.ShadePosition;
 import org.openhab.binding.hdpowerview.internal.api.responses.Shade;
 import org.openhab.binding.hdpowerview.internal.api.responses.Shades.ShadeData;
+import org.openhab.binding.hdpowerview.internal.api.responses.Survey;
 import org.openhab.binding.hdpowerview.internal.config.HDPowerViewShadeConfiguration;
 import org.openhab.core.library.types.DecimalType;
 import org.openhab.core.library.types.OnOffType;
@@ -39,6 +40,7 @@ import org.openhab.core.library.types.QuantityType;
 import org.openhab.core.library.types.StopMoveType;
 import org.openhab.core.library.types.UpDownType;
 import org.openhab.core.library.unit.Units;
+import org.openhab.core.thing.Bridge;
 import org.openhab.core.thing.ChannelUID;
 import org.openhab.core.thing.Thing;
 import org.openhab.core.thing.ThingStatus;
@@ -61,6 +63,7 @@ public class HDPowerViewShadeHandler extends AbstractHubbedThingHandler {
 
     private enum RefreshKind {
         POSITION,
+        SURVEY,
         BATTERY_LEVEL
     }
 
@@ -68,6 +71,7 @@ public class HDPowerViewShadeHandler extends AbstractHubbedThingHandler {
 
     private static final int REFRESH_DELAY_SEC = 10;
     private @Nullable ScheduledFuture<?> refreshPositionFuture = null;
+    private @Nullable ScheduledFuture<?> refreshSignalFuture = null;
     private @Nullable ScheduledFuture<?> refreshBatteryLevelFuture = null;
 
     public HDPowerViewShadeHandler(Thing thing) {
@@ -80,24 +84,51 @@ public class HDPowerViewShadeHandler extends AbstractHubbedThingHandler {
             getShadeId();
         } catch (NumberFormatException e) {
             updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.CONFIGURATION_ERROR,
-                    "Configuration 'id' not a valid integer");
+                    "@text/offline.conf-error.invalid-id");
             return;
         }
-        if (getBridgeHandler() == null) {
-            updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.CONFIGURATION_ERROR, "Hub not configured");
+        Bridge bridge = getBridge();
+        if (bridge == null) {
+            updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.BRIDGE_UNINITIALIZED);
             return;
         }
-        updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.COMMUNICATION_ERROR);
+        if (!(bridge.getHandler() instanceof HDPowerViewHubHandler)) {
+            updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.BRIDGE_UNINITIALIZED,
+                    "@text/offline.conf-error.invalid-bridge-handler");
+            return;
+        }
+        ThingStatus bridgeStatus = bridge.getStatus();
+        if (bridgeStatus == ThingStatus.ONLINE) {
+            updateStatus(ThingStatus.ONLINE);
+        } else {
+            updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.BRIDGE_OFFLINE);
+        }
     }
 
     @Override
     public void handleCommand(ChannelUID channelUID, Command command) {
-        if (RefreshType.REFRESH.equals(command)) {
-            requestRefreshShadePosition();
+        String channelId = channelUID.getId();
+
+        if (RefreshType.REFRESH == command) {
+            switch (channelId) {
+                case CHANNEL_SHADE_POSITION:
+                case CHANNEL_SHADE_SECONDARY_POSITION:
+                case CHANNEL_SHADE_VANE:
+                    requestRefreshShadePosition();
+                    break;
+                case CHANNEL_SHADE_LOW_BATTERY:
+                case CHANNEL_SHADE_BATTERY_LEVEL:
+                case CHANNEL_SHADE_BATTERY_VOLTAGE:
+                    requestRefreshShadeBatteryLevel();
+                    break;
+                case CHANNEL_SHADE_SIGNAL_STRENGTH:
+                    requestRefreshShadeSurvey();
+                    break;
+            }
             return;
         }
 
-        switch (channelUID.getId()) {
+        switch (channelId) {
             case CHANNEL_SHADE_POSITION:
                 if (command instanceof PercentType) {
                     moveShade(PRIMARY_ACTUATOR, ZERO_IS_CLOSED, ((PercentType) command).intValue());
@@ -276,6 +307,15 @@ public class HDPowerViewShadeHandler extends AbstractHubbedThingHandler {
     }
 
     /**
+     * Request that the shade shall undergo a 'hard' refresh for querying its survey data
+     */
+    protected synchronized void requestRefreshShadeSurvey() {
+        if (refreshSignalFuture == null) {
+            refreshSignalFuture = scheduler.schedule(this::doRefreshShadeSignal, REFRESH_DELAY_SEC, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
      * Request that the shade shall undergo a 'hard' refresh for querying its battery level state
      */
     protected synchronized void requestRefreshShadeBatteryLevel() {
@@ -288,6 +328,11 @@ public class HDPowerViewShadeHandler extends AbstractHubbedThingHandler {
     private void doRefreshShadePosition() {
         this.doRefreshShade(RefreshKind.POSITION);
         refreshPositionFuture = null;
+    }
+
+    private void doRefreshShadeSignal() {
+        this.doRefreshShade(RefreshKind.SURVEY);
+        refreshSignalFuture = null;
     }
 
     private void doRefreshShadeBatteryLevel() {
@@ -311,6 +356,14 @@ public class HDPowerViewShadeHandler extends AbstractHubbedThingHandler {
                 case POSITION:
                     shade = webTargets.refreshShadePosition(shadeId);
                     break;
+                case SURVEY:
+                    Survey survey = webTargets.getShadeSurvey(shadeId);
+                    if (survey != null && survey.surveyData != null) {
+                        logger.debug("Survey response for shade {}: {}", survey.shadeId, survey.toString());
+                    } else {
+                        logger.warn("No response from shade {} survey", shadeId);
+                    }
+                    return;
                 case BATTERY_LEVEL:
                     shade = webTargets.refreshShadeBatteryLevel(shadeId);
                     break;

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2010-2021 Contributors to the openHAB project
+ * Copyright (c) 2010-2022 Contributors to the openHAB project
  *
  * See the NOTICE file(s) distributed with this work for additional
  * information.
@@ -33,9 +33,19 @@ public interface TimetablesV1ImplTestHelper {
 
     /**
      * Creates an {@link TimetablesApiTestModule} that uses http response data from file system.
+     * Uses default-testdata from directory /timetablesData
      */
     public default TimetablesApiTestModule createApiWithTestdata() throws Exception {
-        final URL timetablesData = getClass().getResource("/timetablesData");
+        return this.createApiWithTestdata("/timetablesData");
+    }
+
+    /**
+     * Creates an {@link TimetablesApiTestModule} that uses http response data from file system.
+     * 
+     * @param dataDirectory Directory within test-resources containing the stub-data.
+     */
+    public default TimetablesApiTestModule createApiWithTestdata(String dataDirectory) throws Exception {
+        final URL timetablesData = getClass().getResource(dataDirectory);
         assertNotNull(timetablesData);
         final File testDataDir = new File(timetablesData.toURI());
         final TimetableStubHttpCallable httpStub = new TimetableStubHttpCallable(testDataDir);
